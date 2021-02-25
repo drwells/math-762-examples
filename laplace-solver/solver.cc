@@ -1,4 +1,5 @@
 #include <deal.II/dofs/dof_handler.h>
+#include <deal.II/dofs/dof_tools.h>
 
 #include <deal.II/fe/fe_q.h>
 
@@ -6,9 +7,12 @@
 #include <deal.II/grid/grid_out.h>
 
 #include <deal.II/lac/affine_constraints.h>
+#include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/sparsity_pattern.h>
 #include <deal.II/lac/sparse_matrix.h>
 #include <deal.II/lac/vector.h>
+
+#include <deal.II/numerics/vector_tools.h>
 
 #include <iostream>
 #include <fstream>
@@ -89,18 +93,101 @@ template <int dim>
 void
 Laplace<dim>::setup_dofs()
 {
-    // question: how do I tell the DoFHandler about the Triangulation and the
-    // finite element?
+    // tell the DoFHandler about the finite element and triangulation
     dof_handler.initialize(triangulation, finite_element);
 
-    // TODO finish this next class
+    // set up the constraints:
+    dealii::VectorTools::interpolate_boundary_values(
+        dof_handler,
+        0, // default boundary id
+        dealii::Functions::ZeroFunction<dim>(),
+        constraints);
+    constraints.close();
+
+    dealii::DynamicSparsityPattern dynamic_sparsity_pattern(dof_handler.n_dofs());
+    dealii::DoFTools::make_sparsity_pattern(dof_handler,
+                                            dynamic_sparsity_pattern,
+                                            constraints,
+                                            /* keep_constrained_dofs */ false);
+
+    /*
+       replace whatever I have with (keep_constrained_dofs = true)
+
+       1 0 (not stored) (not stored) (not stored)
+       0
+       (not stored)
+       (not stored)
+
+       etc.
+
+       instead do (keep_constrained_dofs = false)
+
+       1 (not stored) (not stored) (not stored) (not stored)
+       (not stored)
+       (not stored)
+       (not stored)
+    */
+
+    sparsity_pattern.copy_from(dynamic_sparsity_pattern);
+
+    system_matrix.reinit(sparsity_pattern);
+
+    // up to this point: solution and system_rhs are empty vectors. Now that we
+    // know how many degrees of freedom there are we can set them to the correct
+    // length:
+    solution.reinit(dof_handler.n_dofs());
+    system_rhs.reinit(dof_handler.n_dofs());
 }
 
 
 template <int dim>
 void
 Laplace<dim>::build_system()
-{}
+{
+    // setup quadrature
+    // values (and gradients) of our basis functions on the physical cells (and Jacobian)
+    // a mapping from the reference to physical cell
+    //
+    //
+    // actually put things in the sparse matrix (and system_rhs)
+
+    const dealii::QGauss<dim> quadrature(finite_element.degree + 1);
+    dealii::MappingQGeneric<dim> mapping(1); // weird name, but this is a bilinear/trilinear mapping
+
+#if 0 // TODO: fix everything
+    FEValues<dim> fe_values(mapping,
+                            finite_element,
+                            quadrature,
+                            update_values | update_gradients | update_JxW);
+
+    FullMatrix<double> cell_matrix(fe.dofs_per_cell, fe.dofs_per_cell);
+    Vector<double> cell_rhs(fe.dofs_per_cell);
+
+    // loop over: elements, quadrature points, test functions, trial functions
+    for (const auto &cell : dof_handler.active_cell_iterators())
+    {
+        for (unsigned int quad_point_n = 0; quad_point_n < quadrature.size();
+             ++quad_point_n)
+        {
+            for (unsigned int i = 0; i < fe.dofs_per_cell; ++i)
+            {
+                for (unsigned int j = 0; j < fe.dofs_per_cell; ++j)
+                {
+                    cell_matrix(i, j) +=
+                        fe_values.shape_grad(i, quad_point_n) *
+                        fe_values.shape_grad(j, quad_point_n) *
+                        fe_values.JxW(quad_point_n);
+                }
+
+                cell_rhs(i) += 1.0 // TODO: fix this with the actual forcing function
+                    * fe_values.shape_value(i, quad_point_n)
+                    * fe_values.JxW(quad_point_n);
+            }
+        }
+    }
+#endif
+
+}
 
 
 template <int dim>
