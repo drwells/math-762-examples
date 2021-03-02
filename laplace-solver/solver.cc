@@ -2,6 +2,8 @@
 #include <deal.II/dofs/dof_tools.h>
 
 #include <deal.II/fe/fe_q.h>
+#include <deal.II/fe/fe_values.h>
+#include <deal.II/fe/fe_update_flags.h>
 
 #include <deal.II/grid/grid_generator.h>
 #include <deal.II/grid/grid_out.h>
@@ -10,6 +12,8 @@
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
 #include <deal.II/lac/sparsity_pattern.h>
 #include <deal.II/lac/sparse_matrix.h>
+#include <deal.II/lac/solver_control.h>
+#include <deal.II/lac/solver_cg.h>
 #include <deal.II/lac/vector.h>
 
 #include <deal.II/numerics/vector_tools.h>
@@ -154,24 +158,33 @@ Laplace<dim>::build_system()
     const dealii::QGauss<dim> quadrature(finite_element.degree + 1);
     dealii::MappingQGeneric<dim> mapping(1); // weird name, but this is a bilinear/trilinear mapping
 
-#if 0 // TODO: fix everything
-    FEValues<dim> fe_values(mapping,
-                            finite_element,
-                            quadrature,
-                            update_values | update_gradients | update_JxW);
+    dealii::FEValues<dim> fe_values(mapping,
+                                    finite_element,
+                                    quadrature,
+                                    dealii::update_values | dealii::update_gradients |
+                                    dealii::update_JxW_values);
 
-    FullMatrix<double> cell_matrix(fe.dofs_per_cell, fe.dofs_per_cell);
-    Vector<double> cell_rhs(fe.dofs_per_cell);
+    dealii::FullMatrix<double> cell_matrix(finite_element.dofs_per_cell,
+                                           finite_element.dofs_per_cell);
+    dealii::Vector<double> cell_rhs(finite_element.dofs_per_cell);
+
+    std::vector<dealii::types::global_dof_index> cell_dof_indices(finite_element.dofs_per_cell);
 
     // loop over: elements, quadrature points, test functions, trial functions
     for (const auto &cell : dof_handler.active_cell_iterators())
     {
+        fe_values.reinit(cell);
+        // cell is:
+        // 1. a level number (for us: number of global refinements)
+        // 2. an index inside that level
+        // 3. a pointer to the DoFHandler
+
         for (unsigned int quad_point_n = 0; quad_point_n < quadrature.size();
              ++quad_point_n)
         {
-            for (unsigned int i = 0; i < fe.dofs_per_cell; ++i)
+            for (unsigned int i = 0; i < finite_element.dofs_per_cell; ++i)
             {
-                for (unsigned int j = 0; j < fe.dofs_per_cell; ++j)
+                for (unsigned int j = 0; j < finite_element.dofs_per_cell; ++j)
                 {
                     cell_matrix(i, j) +=
                         fe_values.shape_grad(i, quad_point_n) *
@@ -184,16 +197,24 @@ Laplace<dim>::build_system()
                     * fe_values.JxW(quad_point_n);
             }
         }
-    }
-#endif
 
+        cell->get_dof_indices(cell_dof_indices);
+        constraints.distribute_local_to_global(cell_matrix, cell_rhs, cell_dof_indices,
+                                               system_matrix, system_rhs);
+    }
 }
 
 
 template <int dim>
 void
 Laplace<dim>::solve_system()
-{}
+{
+    dealii::SolverControl solver_control(1000, 1e-12*system_rhs.l2_norm());
+    dealii::SolverCG<>    solver(solver_control);
+
+    // We use CG (a Krylov method) here because we want our code to work
+    // reasonably well in 3D. The alternative is to use SparseDirectUMFPACK.
+}
 
 
 template <int dim>
