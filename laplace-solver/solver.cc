@@ -10,12 +10,14 @@
 
 #include <deal.II/lac/affine_constraints.h>
 #include <deal.II/lac/dynamic_sparsity_pattern.h>
+#include <deal.II/lac/precondition.h>
 #include <deal.II/lac/sparsity_pattern.h>
 #include <deal.II/lac/sparse_matrix.h>
 #include <deal.II/lac/solver_control.h>
 #include <deal.II/lac/solver_cg.h>
 #include <deal.II/lac/vector.h>
 
+#include <deal.II/numerics/data_out.h>
 #include <deal.II/numerics/vector_tools.h>
 
 #include <iostream>
@@ -164,11 +166,15 @@ Laplace<dim>::build_system()
                                     dealii::update_values | dealii::update_gradients |
                                     dealii::update_JxW_values);
 
-    dealii::FullMatrix<double> cell_matrix(finite_element.dofs_per_cell,
-                                           finite_element.dofs_per_cell);
-    dealii::Vector<double> cell_rhs(finite_element.dofs_per_cell);
-
     std::vector<dealii::types::global_dof_index> cell_dof_indices(finite_element.dofs_per_cell);
+    // int : 32 bits (about -2 billion to to 2 billion)
+    // unsigned int : 32 bits (up to about 4 billion)
+    //
+    // long int (or just long): 64 bits
+    // unsigned long int (or just long): 64 bits
+    //
+    // int could be 16 on very small machines
+
 
     // loop over: elements, quadrature points, test functions, trial functions
     for (const auto &cell : dof_handler.active_cell_iterators())
@@ -178,6 +184,8 @@ Laplace<dim>::build_system()
         // 1. a level number (for us: number of global refinements)
         // 2. an index inside that level
         // 3. a pointer to the DoFHandler
+        cell_matrix = 0.0;
+        cell_rhs = 0.0;
 
         for (unsigned int quad_point_n = 0; quad_point_n < quadrature.size();
              ++quad_point_n)
@@ -210,10 +218,16 @@ void
 Laplace<dim>::solve_system()
 {
     dealii::SolverControl solver_control(1000, 1e-12*system_rhs.l2_norm());
-    dealii::SolverCG<>    solver(solver_control);
+    dealii::SolverCG<dealii::Vector<double>>    solver(solver_control); // Same as SolverCG<>
+
+    dealii::PreconditionJacobi<> preconditioner; // Same as PreconditionJacobi<SparseMatrix<double>>
+    preconditioner.initialize(system_matrix);
 
     // We use CG (a Krylov method) here because we want our code to work
     // reasonably well in 3D. The alternative is to use SparseDirectUMFPACK.
+    solver.solve(system_matrix, solution, system_rhs, preconditioner);
+
+    constraints.distribute(solution);
 }
 
 
@@ -226,6 +240,18 @@ Laplace<dim>::make_pretty_graphics()
         ("grid-" + std::to_string(n_refinements) + ".svg");
     dealii::GridOut go;
     go.write_svg(triangulation, out);
+
+    // write the solution
+    {
+      dealii::DataOut<dim> data_out;
+      data_out.attach_dof_handler(dof_handler);
+      data_out.add_data_vector(solution, "solution");
+      data_out.add_data_vector(system_rhs, "system_rhs");
+      // All finite element spaces are subsets of a discontinuous polynomial space
+      data_out.build_patches();
+      std::ofstream output("solution.vtu");
+      data_out.write_vtu(output);
+    }
 }
 
 
